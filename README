@@ -1,0 +1,27 @@
+A collection of scripts use during machine learning experiments. All
+highly experimental.
+
+confusionmatrix.py was written by Vincent Van Asch. See the following
+website for up-to-date builds and documentation:
+
+http://www.clips.ua.ac.be/scripts/confusionmatrix
+
+---------------
+grid.py
+---------------
+A modified version of libSVM's grid.py script. The original can be found in the
+'tools' directory in any distribution of libSVM:
+http://www.csie.ntu.edu.tw/~cjlin/libsvm/
+
+Reference:
+Chih-Chung Chang and Chih-Jen Lin, LIBSVM : a library for support vector
+machines. ACM Transactions on Intelligent Systems and Technology,
+2:27:1--27:27, 2011.
+Software available at http://www.csie.ntu.edu.tw/~cjlin/libsvm
+
+This modified version allows optimizing on different criteria than accuracy.
+Optimizing on accuracy could cause problems with unbalanced data, where the
+classifier would achieve higher scores by binning everything into the majority
+class. Using F-measures should counter this problem.
+
+Only works with local workers so far.
