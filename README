@@ -1,14 +1,17 @@
 A collection of scripts use during machine learning experiments. All
 highly experimental.
 
-confusionmatrix.py was written by Vincent Van Asch. See the following
-website for up-to-date builds and documentation:
+---------------------
+confusionmatrix.py
+---------------------
+Written by Vincent Van Asch. See the following website for up-to-date builds
+and documentation:
 
 http://www.clips.ua.ac.be/scripts/confusionmatrix
 
----------------
+--------------------
 grid.py
----------------
+--------------------
 A modified version of libSVM's grid.py script. The original can be found in the
 'tools' directory in any distribution of libSVM:
 http://www.csie.ntu.edu.tw/~cjlin/libsvm/
@@ -24,4 +27,15 @@ Optimizing on accuracy could cause problems with unbalanced data, where the
 classifier would achieve higher scores by binning everything into the majority
 class. Using F-measures should counter this problem.
 
-Only works with local workers so far.
+This mod also has some REDUCED FUNCTIONALITY compared to the original.
+Specifically, it does not support SSH or Telnet workers, multiple local
+workers are also not supported as using more than one worker would invariably
+result in segfaults or illegal instruction errors. If you wish to use these
+functions, please use the original grid.py.
+
+Depends on confusionmatrix.py by Vincent Van Asch:
+http://www.clips.ua.ac.be/scripts/confusionmatrix
+
+Script modified by
+Frederik Vaassen <frederik.vaassen@ua.ac.be>
+CLiPS Research Center, Antwerp, Belgium

@@ -1,135 +1,46 @@
 #!/usr/bin/env python
-
-'''
-A modified version of libSVM's grid.py script. The original can be found in the
-'tools' directory in any distribution of libSVM:
-http://www.csie.ntu.edu.tw/~cjlin/libsvm/
-
-Reference:
-Chih-Chung Chang and Chih-Jen Lin, LIBSVM : a library for support vector machines.
-ACM Transactions on Intelligent Systems and Technology, 2:27:1--27:27, 2011.
-Software available at http://www.csie.ntu.edu.tw/~cjlin/libsvm
-
-This modified version allows optimizing on different criteria than accuracy.
-Optimizing on accuracy could cause problems with unbalanced data, where the
-classifier would achieve higher scores by binning everything into the majority
-class. Using F-measures should counter this problem.
-
-Depends on confustionmatrix.py by Vincent Van Asch:
-http://www.clips.ua.ac.be/scripts/confusionmatrix
-
-'''
+#
+# A modified version of libSVM's grid.py script. The original can be found in the
+# 'tools' directory in any distribution of libSVM:
+# http://www.csie.ntu.edu.tw/~cjlin/libsvm/
+#
+# Reference:
+# Chih-Chung Chang and Chih-Jen Lin, LIBSVM : a library for support vector machines.
+# ACM Transactions on Intelligent Systems and Technology, 2:27:1--27:27, 2011.
+# Software available at http://www.csie.ntu.edu.tw/~cjlin/libsvm
+#
+# This modified version allows optimizing on different criteria than accuracy.
+# Optimizing on accuracy could cause problems with unbalanced data, where the
+# classifier would achieve higher scores by binning everything into the majority
+# class. Using F-measures should counter this problem.
+#
+# This mod also has some REDUCED FUNCTIONALITY compared to the original.
+# Specifically, it does not support SSH or Telnet workers, multiple local
+# workers are also not supported as using more than one worker would invariably
+# result in segfaults or illegal instruction errors. If you wish to use these
+# functions, please use the original grid.py.
+#
+# Depends on confusionmatrix.py by Vincent Van Asch:
+# http://www.clips.ua.ac.be/scripts/confusionmatrix
+#
+# Script modified by
+# Frederik Vaassen <frederik.vaassen@ua.ac.be>
+# CLiPS Research Center, Antwerp, Belgium
+#
 
 import os, sys, traceback
 import getpass
 from random import shuffle
 from itertools import chain
-from confusionmatrix import ConfusionMatrix
-
 from threading import Thread
 from subprocess import *
-
-libsvmpath = '/home/frederik/Tools/libsvm-3.11'
-sys.path.insert(0, os.path.join(libsvmpath, 'python'))
-from svmutil import *
+from optparse import OptionParser
+from confusionmatrix import ConfusionMatrix
 
 if(sys.hexversion < 0x03000000):
 	import Queue
 else:
 	import queue as Queue
-
-# svmtrain and gnuplot executable
-
-is_win32 = (sys.platform == 'win32')
-if not is_win32:
-	svmtrain_exe = os.path.join(libsvmpath, 'svm-train')
-	gnuplot_exe = "/usr/bin/gnuplot"
-else:
-	   # example for windows
-	   svmtrain_exe = os.path.join(libsvmpath, 'svm-train.exe')
-	   # svmtrain_exe = r"c:\Program Files\libsvm\windows\svm-train.exe"
-	   gnuplot_exe = r"c:\tmp\gnuplot\binary\pgnuplot.exe"
-
-# global parameters and their default values
-
-fold = 5
-c_begin, c_end, c_step = -5,  15, 2
-g_begin, g_end, g_step =  3, -15, -2
-criterion = 'macrofmeasure'
-global dataset_pathname, dataset_title, pass_through_string
-global out_filename, png_filename
-
-# experimental
-
-telnet_workers = []
-ssh_workers = []
-nr_local_worker = 1
-
-# process command line options, set global parameters
-def process_options(argv=sys.argv):
-
-	global fold
-	global c_begin, c_end, c_step
-	global g_begin, g_end, g_step
-	global criterion
-	global dataset_pathname, dataset_title, pass_through_string
-	global svmtrain_exe, gnuplot_exe, gnuplot, out_filename, png_filename
-
-	usage = """\
-Usage: grid.py [-log2c begin,end,step] [-log2g begin,end,step] [-v fold]
-[-criterion optimization criterion][-libsvm pathname] [-gnuplot pathname]
-[-out pathname] [-png pathname] [additional parameters for svm-train] dataset"""
-
-	if len(argv) < 2:
-		print(usage)
-		sys.exit(1)
-
-	dataset_pathname = argv[-1]
-	dataset_title = os.path.split(dataset_pathname)[1]
-	out_filename = '{0}.out'.format(dataset_title)
-	png_filename = '{0}.png'.format(dataset_title)
-	pass_through_options = []
-
-	i = 1
-	while i < len(argv) - 1:
-		if argv[i] == "-log2c":
-			i = i + 1
-			(c_begin,c_end,c_step) = map(float,argv[i].split(","))
-		elif argv[i] == "-log2g":
-			i = i + 1
-			(g_begin,g_end,g_step) = map(float,argv[i].split(","))
-		elif argv[i] == "-v":
-			i = i + 1
-			fold = int(argv[i])
-		elif argv[i] in ('-c','-g'):
-			print("Option -c and -g are renamed.")
-			print(usage)
-			sys.exit(1)
-		elif argv[i] == '-criterion':
-			i = i + 1
-			criterion = argv[i]
-		elif argv[i] == '-libsvm':
-			i = i + 1
-			libsvmpath = argv[i]
-		elif argv[i] == '-gnuplot':
-			i = i + 1
-			gnuplot_exe = argv[i]
-		elif argv[i] == '-out':
-			i = i + 1
-			out_filename = argv[i]
-		elif argv[i] == '-png':
-			i = i + 1
-			png_filename = argv[i]
-		else:
-			pass_through_options.append(argv[i])
-		i = i + 1
-
-	pass_through_string = " ".join(pass_through_options)
-	assert os.path.exists(svmtrain_exe),"svm-train executable not found"
-	assert os.path.exists(gnuplot_exe),"gnuplot executable not found"
-	assert os.path.exists(dataset_pathname),"dataset not found"
-	gnuplot = Popen(gnuplot_exe,stdin = PIPE).stdin
-
 
 def range_f(begin,end,step):
 	# like range, but works on non-integer too
@@ -206,7 +117,6 @@ def redraw(db,best_param,tofile=False):
 	gnuplot.write(b"\n") # force gnuplot back to prompt when term set failure
 	gnuplot.flush()
 
-
 def calculate_jobs():
 	c_seq = permute_sequence(range_f(c_begin,c_end,c_step))
 	g_seq = permute_sequence(range_f(g_begin,g_end,g_step))
@@ -279,14 +189,12 @@ class Worker(Thread):
 			(cexp,gexp) = self.job_queue.get()
 			if cexp is WorkerStopToken:
 				self.job_queue.put((cexp,gexp))
-				# print('worker {0} stop.'.format(self.name))
 				break
 			try:
 				rate = self.run_one(2.0**cexp,2.0**gexp)
 				if rate is None: raise RuntimeError("get no rate")
 			except:
 				# we failed, let others do that and we just quit
-
 				traceback.print_exception(sys.exc_info()[0], sys.exc_info()[1], sys.exc_info()[2])
 
 				self.job_queue.put((cexp,gexp))
@@ -332,58 +240,9 @@ class LocalWorker(Worker):
 
 		return rate
 
-class SSHWorker(Worker):
-	def __init__(self,name,job_queue,result_queue,host):
-		Worker.__init__(self,name,job_queue,result_queue)
-		self.host = host
-		self.cwd = os.getcwd()
-	def run_one(self,c,g):
-		cmdline = 'ssh -x {0} "cd {1}; {2} -c {3} -g {4} -v {5} {6} {7}"'.format \
-		  (self.host,self.cwd, \
-		   svmtrain_exe,c,g,fold,pass_through_string,dataset_pathname)
-		result = Popen(cmdline,shell=True,stdout=PIPE).stdout
-		for line in result.readlines():
-			if str(line).find("Cross") != -1:
-				return float(line.split()[-1][0:-1])
-
-class TelnetWorker(Worker):
-	def __init__(self,name,job_queue,result_queue,host,username,password):
-		Worker.__init__(self,name,job_queue,result_queue)
-		self.host = host
-		self.username = username
-		self.password = password
-	def run(self):
-		import telnetlib
-		self.tn = tn = telnetlib.Telnet(self.host)
-		tn.read_until("login: ")
-		tn.write(self.username + "\n")
-		tn.read_until("Password: ")
-		tn.write(self.password + "\n")
-
-		# XXX: how to know whether login is successful?
-		tn.read_until(self.username)
-		#
-		print('login ok', self.host)
-		tn.write("cd "+os.getcwd()+"\n")
-		Worker.run(self)
-		tn.write("exit\n")
-	def run_one(self,c,g):
-		cmdline = '{0} -c {1} -g {2} -v {3} {4} {5}'.format \
-		  (svmtrain_exe,c,g,fold,pass_through_string,dataset_pathname)
-		result = self.tn.write(cmdline+'\n')
-		(idx,matchm,output) = self.tn.expect(['Cross.*\n'])
-		for line in output.split('\n'):
-			if str(line).find("Cross") != -1:
-				return float(line.split()[-1][0:-1])
-
 def main():
 
-	# set parameters
-
-	process_options()
-
 	# put jobs in queue
-
 	jobs = calculate_jobs()
 	job_queue = Queue.Queue(0)
 	result_queue = Queue.Queue(0)
@@ -398,38 +257,15 @@ def main():
 	# use FIFO, the job will be put
 	# into the end of the queue, and the graph
 	# will only be updated in the end
-
 	job_queue._put = job_queue.queue.appendleft
 
-
-	# fire telnet workers
-
-	if telnet_workers:
-		nr_telnet_worker = len(telnet_workers)
-		username = getpass.getuser()
-		password = getpass.getpass()
-		for host in telnet_workers:
-			TelnetWorker(host,job_queue,result_queue,
-					 host,username,password).start()
-
-	# fire ssh workers
-
-	if ssh_workers:
-		for host in ssh_workers:
-			SSHWorker(host,job_queue,result_queue,host).start()
-
-	# fire local workers
-
-	for i in range(nr_local_worker):
-		LocalWorker('local',job_queue,result_queue).start()
+	# fire local worker
+	LocalWorker('local',job_queue,result_queue).start()
 
 	# gather results
-
 	done_jobs = {}
 
-
 	result_file = open(out_filename, 'w')
-
 
 	db = []
 	best_rate = -1
@@ -456,4 +292,76 @@ def main():
 	job_queue.put((WorkerStopToken,None))
 	print("{0} {1} {2}".format(best_c, best_g, best_rate))
 
-main()
+if __name__ == '__main__':
+
+	parser = OptionParser(usage = "python %prog data_file [pass-through options] (options)\nOptimizes libSVM's c an g parameters on data_file.", version='%prog 0.1')
+	parser.add_option('-c', '--log2c', dest='log2c', default=None,
+						help='log2 of start, end and step-values (comma-separated) to use to search the c parameter. (Default: -5,15,2)')
+	parser.add_option('-g', '--log2g', dest='log2g', default=None,
+						help='log2 of start, end and step-values (comma-separated) to use to search the g parameter. (Default: 3,-15,-2)')
+	parser.add_option('-v', '--cv-folds', dest='folds', default=5, type='int',
+						help="Specify the number of folds to be used for cross-validation. (Default: 5)")
+	parser.add_option('-r', '--criterion', dest='criterion', default='macrofmeasure',
+						help="Specify the criterion to use for optimization. (Allowed: accuracy, microfmeasure, macrofmeasure (default))")
+	parser.add_option('-o', '--out-file', dest='out_filename', default=None,
+						help="Choose the location of the output file. (Default: data_file.out)")
+	parser.add_option('-p', '--png-file', dest='png_filename', default=None,
+						help="Choose the location of the PNG file that will contain the plot. (Default: data_file.png)")
+	parser.add_option('--libsvm-path', dest='libsvmpath', default='/opt/libsvm',
+						help="Specify the path to the libSVM folder. (Default: /opt/libsvm)")
+	parser.add_option('--gnuplot-path', dest='gnuplot_exe', default='/usr/bin/gnuplot',
+						help="Specify the location of Gnuplot. (Default: /usr/bin/gnuplot)")
+	(options, args) = parser.parse_args()
+
+	if len(args) < 1:
+		sys.exit(parser.print_help())
+
+	# Input file
+	dataset_pathname = args[0]
+
+	is_win32 = (sys.platform == 'win32')
+	if not is_win32:
+		svmtrain_exe = os.path.join(options.libsvmpath, 'svm-train')
+		gnuplot_exe = options.gnuplot_exe
+	else:
+		# example for windows
+		svmtrain_exe = os.path.join(libsvmpath, 'svm-train.exe')
+		gnuplot_exe = options.gnuplot_exe
+
+	assert os.path.exists(svmtrain_exe),"svm-train executable not found"
+	assert os.path.exists(gnuplot_exe),"gnuplot executable not found"
+	assert os.path.exists(dataset_pathname),"dataset not found"
+
+	sys.path.insert(0, os.path.join(options.libsvmpath, 'python'))
+	from svmutil import *
+
+	# Output files
+	dataset_title = os.path.basename(dataset_pathname)
+	if not options.out_filename:
+		out_filename = '{0}.out'.format(dataset_title)
+	else:
+		out_filename = options.out_filename
+	if not options.png_filename:
+		png_filename = '{0}.png'.format(dataset_title)
+	else:
+		png_filename = options.png_filename
+
+	pass_through_options = []
+	if len(args) > 1:
+		pass_through_options = args[1:]
+	pass_through_string = ' '.join(pass_through_options)
+
+	fold = options.folds
+	criterion = options.criterion
+
+	if not options.log2c:
+		c_begin, c_end, c_step = -5,  15, 2
+	else:
+		c_begin, c_end, c_step = map(float, options.log2c.split(','))
+	if not options.log2g:
+		g_begin, g_end, g_step =  3, -15, -2
+	else:
+		g_begin, g_end, g_step = map(float, options.log2g.split(','))
+
+	gnuplot = Popen(gnuplot_exe,stdin = PIPE).stdin
+	main()
