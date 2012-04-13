@@ -30,6 +30,7 @@
 
 import os, sys, traceback
 import getpass
+from operator import itemgetter
 from random import shuffle
 from itertools import chain
 from threading import Thread
@@ -228,15 +229,23 @@ class LocalWorker(Worker):
 			for ref, pred in zip(test_labels, pred_labels):
 				cm.update(ref, pred)
 
-		global criterion
-		if criterion == 'macrofmeasure':
+		if criterion == 'minorityboost':
+			label_counts = dict([(label, cm.count(label)) for label in set(labels)])
+			sorted_classes = sorted(label_counts.iteritems(), key=itemgetter(1))
+			minority_class = sorted_classes[0][0]
+			majority_class = sorted_classes[-1][0]
+
+			rate = cm.microprecision()*100
+			if cm.precision(majority_class) == 0.0 or cm.precision(minority_class) == 0.0:
+				rate = 0.0
+		elif criterion == 'macrofmeasure':
 			rate = cm.macrofmeasure()*100
 		elif criterion == 'microfmeasure':
 			rate = cm.microfmeasure()*100
 		elif criterion == 'accuracy':
 			rate = cm.accuracy*100
 		else:
-			sys.exit('Unknown criterion: {0}\n Available: macrofmeasure, microfmeasure, accuracy'.format(criterion))
+			sys.exit('Unknown criterion: {0}\n Available: macrofmeasure, microfmeasure, accuracy, minorityboost'.format(criterion))
 
 		return rate
 
@@ -294,7 +303,7 @@ def main():
 
 if __name__ == '__main__':
 
-	parser = OptionParser(usage = "python %prog data_file [pass-through options] (options)\nOptimizes libSVM's c an g parameters on data_file.", version='%prog 0.1')
+	parser = OptionParser(usage = "python %prog data_file (options)\nOptimizes libSVM's c an g parameters on data_file.", version='%prog 0.1')
 	parser.add_option('-c', '--log2c', dest='log2c', default=None,
 						help='log2 of start, end and step-values (comma-separated) to use to search the c parameter. (Default: -5,15,2)')
 	parser.add_option('-g', '--log2g', dest='log2g', default=None,
@@ -302,7 +311,7 @@ if __name__ == '__main__':
 	parser.add_option('-v', '--cv-folds', dest='folds', default=5, type='int',
 						help="Specify the number of folds to be used for cross-validation. (Default: 5)")
 	parser.add_option('-r', '--criterion', dest='criterion', default='macrofmeasure',
-						help="Specify the criterion to use for optimization. (Allowed: accuracy, microfmeasure, macrofmeasure (default))")
+						help="Specify the criterion to use for optimization. (Allowed: accuracy, microfmeasure, macrofmeasure (default)")
 	parser.add_option('-o', '--out-file', dest='out_filename', default=None,
 						help="Choose the location of the output file. (Default: data_file.out)")
 	parser.add_option('-p', '--png-file', dest='png_filename', default=None,
@@ -311,6 +320,8 @@ if __name__ == '__main__':
 						help="Specify the path to the libSVM folder. (Default: /opt/libsvm)")
 	parser.add_option('--gnuplot-path', dest='gnuplot_exe', default='/usr/bin/gnuplot',
 						help="Specify the location of Gnuplot. (Default: /usr/bin/gnuplot)")
+	parser.add_option('--passthrough', dest='passthrough', default='',
+						help="Passthrough string for the classifier. (Default: "")")
 	(options, args) = parser.parse_args()
 
 	if len(args) < 1:
@@ -346,10 +357,7 @@ if __name__ == '__main__':
 	else:
 		png_filename = options.png_filename
 
-	pass_through_options = []
-	if len(args) > 1:
-		pass_through_options = args[1:]
-	pass_through_string = ' '.join(pass_through_options)
+	pass_through_string = options.passthrough
 
 	fold = options.folds
 	criterion = options.criterion
