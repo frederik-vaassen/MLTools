@@ -75,26 +75,20 @@ def getInstances(folder, pattern=None):
 	else:
 		pattern = re.compile('N_GRAM_TOKEN_?1.TotalSet.ngrams.txt')
 
-	if len(folds) == 1:
-		for root, dirs, files in os.walk(folds[0]):
-			if root.endswith('train/svm'):
-				instances = sorted([os.path.join(root, f) for f in files if re.search(pattern, f)])
-		instances = [(instances[0], None)]
-	else:
-		instances = []
-		for fold in folds:
-			fold_inst = [None, None]
-			for root, dirs, files in os.walk(fold):
-				path = os.path.split(root)
-				if path[1] == 'svm':
-					path = os.path.split(path[0])
-					if path[1] == 'train':
-						fold_inst[0] = sorted([os.path.join(root, f) for f in files if re.search(pattern, f)])[0]
-					elif path[1] == 'test':
-						fold_inst[1] = (sorted([os.path.join(root, f) for f in files if re.search(pattern, f)])[0] or None)
-			assert fold_inst[0] is not None
-			assert fold_inst[1] is not None
-			instances.append(tuple(fold_inst))
+	instances = []
+	for fold in folds:
+		fold_inst = [None, None]
+		for root, dirs, files in os.walk(fold):
+			path = os.path.split(root)
+			if path[1] == 'svm':
+				path = os.path.split(path[0])
+				if path[1] == 'train':
+					fold_inst[0] = sorted([os.path.join(root, f) for f in files if re.search(pattern, f)])[0]
+				elif path[1] == 'test':
+					fold_inst[1] = (sorted([os.path.join(root, f) for f in files if re.search(pattern, f)])[0] or None)
+		assert fold_inst[0] is not None
+		assert fold_inst[1] is not None
+		instances.append(tuple(fold_inst))
 
 	return instances
 
@@ -142,8 +136,6 @@ def train(train_file, fold_num, mapping=None, parameters={'-c': 1}, output_folde
 	for label in set(labels):
 		distribution[label] = float(labels.count(label))/len(labels)
 
-	print 'Training distribution:', distribution
-
 	paramstring = ''
 	for param, value in parameters.items():
 		paramstring += ' {0} {1}'.format(param, value)
@@ -156,7 +148,7 @@ def train(train_file, fold_num, mapping=None, parameters={'-c': 1}, output_folde
 	model = svm_train(labels, instances, paramstring)
 	svm_save_model(model_file, model)
 
-	return model_file
+	return model_file, distribution
 
 def test(test_file, model_file, fold_num, mapping=None, debug=False):
 	'''
@@ -192,9 +184,7 @@ def test(test_file, model_file, fold_num, mapping=None, debug=False):
 		pred_labels, (ACC, MSC, SCC), pred_values = svm_predict(labels, instances, model, options='-b 1')
 		label_order = model.get_labels()
 
-	pred_values = dict([(l, values) for l, values in zip(label_order, pred_values)])
-
-	return pred_labels, pred_values, labels
+	return pred_labels, pred_values, label_order, labels
 
 def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1}, pattern=None):
 	'''
@@ -259,12 +249,48 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 	# Train and test each fold.
 	for i, (train_file, test_file) in enumerate(instance_files):
 
+		# If the dictionary file exists, use it to add more meta-information.
+		base_name = test_file.split('.ngrams.txt')[0]
+		dict_file = base_name + '.dictionary.ngrams.txt'
+		base_name = os.path.basename(base_name.split('.TotalSet')[0])
+		if not os.path.exists(dict_file):
+			original_filenames = None
+		else:
+			original_filenames = []
+			with open(dict_file, 'r') as fin:
+				while True:
+					line = fin.readline()
+					if not line.strip():
+						break
+					original_filenames.append(line.split()[1])
+
 		print 'Processing fold {0}/{1}'.format(i+1, len(instance_files))
 		# Train!
-		fold_model = train(train_file, i, intermediate_mapping, parameters, results_folder)
+		fold_model, fold_distribution = train(train_file, i, intermediate_mapping, parameters, results_folder)
+		print 'Training distribution:', dict([(true_mapping[label], dist) for label, dist in fold_distribution.items()])
 
 		# Classify!
-		pred_labels, pred_values, test_labels = test(test_file, fold_model, i, intermediate_mapping)
+		pred_labels, pred_values, label_order, test_labels = test(test_file, fold_model, i, intermediate_mapping)
+
+		# Write the predicted (non-remapped) labels to file.
+		pred_values_dict = dict([(label, []) for label in label_order])
+		output_folder = os.path.join(results_folder, 'fold-{0:02d}'.format(i+1))
+
+		with open(os.path.join(output_folder, os.path.basename(test_file) + '.predicted'), 'w') as fout:
+			# Headers
+			fout.write('filename predicted\t')
+			for label in label_order:
+				fout.write('{0}\t'.format(label))
+			fout.write('{0}\n'.format(dict([(label, true_mapping[label]) for label in label_order])))
+			# Predictions
+			for j, (pred_label, pred_vals) in enumerate(zip(pred_labels, pred_values)):
+				for k, value in enumerate(pred_vals):
+					pred_values_dict[label_order[k]].append(value)
+				if not original_filenames:
+					filename = 'unknown'
+				else:
+					filename = original_filenames[j].split('.ProcessedFrequencies.xml')[0].split(base_name)[0].rstrip('.')
+				fout.write('{0}\t{1}\t{2}\n'.format(filename, int(pred_label), ' '.join([str(val) for val in pred_vals])))
 
 		# Remap to the true labels
 		pred_labels = [true_mapping[label] for label in pred_labels]
@@ -277,8 +303,8 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 			local_cm.update(gold, pred)
 			global_cm.update(gold, pred)
 
-		# Update the predicted values.
-		pred_values = dict([(true_mapping[label], values) for label, values in pred_values.items()])
+		# Update the predicted values
+		pred_values = dict([(true_mapping[label], values) for label, values in pred_values_dict.items()])
 		assert i==0 or sorted(pred_values) == sorted(predicted_values)
 		for label, values in pred_values.items():
 			predicted_values[label].extend(values)
@@ -298,7 +324,7 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 		print '{0} R\t{1:.3f}'.format(label, global_cm.recall(label))
 		print '{0} F\t{1:.3f}'.format(label, global_cm.fmeasure(label))
 	print
-	print 'Accuracy: {0:.3f} +/- {1:.3f}'.format(global_cm.accuracy, stdev)
+	print 'Accuracy: {0:.3f} +/- {1:.3f} ({2}/{3})'.format(global_cm.accuracy, stdev, sum([global_cm.TP(c) for c in global_cm.classes]), len(global_cm))
 	print 'Micro-avg F:', global_cm.microfmeasure()
 	print 'Macro-avg F:', global_cm.macrofmeasure()
 
@@ -316,7 +342,7 @@ if specified.''', version='%prog 0.1')
 						help="Specify the folder you want model files and predictions to be stored. (Default: instance_folder/fold-XX/)")
 	parser.add_option('-c', '--classifier', dest='classifier', default='libsvm',
 						help="Specify the classifier you want to use. (Available: 'libsvm' (default), 'liblinear')")
-	parser.add_option('-p', '--params', dest='parameters', default="c:512-g:8",
+	parser.add_option('--params', dest='parameters', default="c:32-g:8",
 						help="Specify the parameters for the classifier. Separate keys and values with a colon, and different parameters with a dash. (Default: 'c:512-g:8')")
 	parser.add_option('-r', '--remap-file', dest='remap_file', default=None,
 						help="Specify the location of the XML file containing a class remapping. (Default: None)")
