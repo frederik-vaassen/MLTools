@@ -235,8 +235,8 @@ class LocalWorker(Worker):
 			minority_class = sorted_classes[0][0]
 			majority_class = sorted_classes[-1][0]
 
-			rate = cm.microprecision()*100
-			if cm.precision(majority_class) == 0.0 or cm.precision(minority_class) == 0.0:
+			rate = cm.fmeasure(minority_class)*100
+			if cm.fmeasure(majority_class) == 0.0:
 				rate = 0.0
 		elif criterion == 'macrofmeasure':
 			rate = cm.macrofmeasure()*100
