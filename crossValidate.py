@@ -71,9 +71,10 @@ def getInstances(folder, pattern=None):
 	folds = sorted([os.path.join(os.path.abspath(folder), f) for f in os.listdir(folder) if re.match('fold-\d+', f)])
 
 	if pattern:
-		pattern = re.compile(pattern)
+		re_pattern = re.compile(pattern)
 	else:
-		pattern = re.compile('N_GRAM_TOKEN_?1.TotalSet.ngrams.txt')
+		re_pattern = re.compile('N_GRAM_TOKEN_?1.TotalSet.ngrams.txt')
+		pattern = 'N_GRAM_TOKEN_?1.TotalSet.ngrams.txt'
 
 	instances = []
 	for fold in folds:
@@ -82,10 +83,13 @@ def getInstances(folder, pattern=None):
 			path = os.path.split(root)
 			if path[1] == 'svm':
 				path = os.path.split(path[0])
-				if path[1] == 'train':
-					fold_inst[0] = sorted([os.path.join(root, f) for f in files if re.search(pattern, f)])[0]
-				elif path[1] == 'test':
-					fold_inst[1] = (sorted([os.path.join(root, f) for f in files if re.search(pattern, f)])[0] or None)
+				try:
+					if path[1] == 'train':
+						fold_inst[0] = sorted([os.path.join(root, f) for f in files if re.search(re_pattern, f)])[0]
+					elif path[1] == 'test':
+						fold_inst[1] = sorted([os.path.join(root, f) for f in files if re.search(re_pattern, f)])[0]
+				except IndexError:
+					sys.exit('\nNo files matching pattern "{0}" found in {1}.\nAre you sure you set the correct pattern? (-i option)\n'.format(pattern, os.path.join(path[0], path[1])))
 		assert fold_inst[0] is not None
 		assert fold_inst[1] is not None
 		instances.append(tuple(fold_inst))
@@ -113,7 +117,16 @@ def reMap(labels, mapping):
 	else:
 		return labels
 
-def train(train_file, fold_num, mapping=None, parameters={'-c': 1}, output_folder=None):
+def alt_read_problem(input_file):
+	with open(input_file, 'r') as fin:
+		vectors = [line.strip().split() for line in fin.readlines() if line.strip()]
+
+	labels = [map(float, vector[0].split(',')) for vector in vectors]
+	instances = [dict((int(feature.split(':')[0]), float(feature.split(':')[1])) for feature in vector[1:]) for vector in vectors]
+
+	return labels, instances
+
+def train(train_file, fold_num, mapping=None, parameters={'-c': 1}, multilabel=None, output_folder=None):
 	'''
 	Given a training instance file and (optionally) a label mapping, adapt the
 	training vectors to fit the mapping and build an SVM model.
@@ -126,7 +139,19 @@ def train(train_file, fold_num, mapping=None, parameters={'-c': 1}, output_folde
 	if not os.path.exists(output_folder):
 		os.makedirs(output_folder)
 
-	labels, instances = svm_read_problem(train_file)
+	if multilabel:
+		temp_labels, instances = alt_read_problem(train_file)
+		temp_labels = [[mapping[l] for l in label] for label in temp_labels]
+
+		labels = []
+		for temp_labs in temp_labels:
+			if multilabel[1] in temp_labs:
+				labels.append(multilabel[1])
+			else:
+				assert len(set(temp_labs)) == 1, "Something appears to be wrong with the intermediate mapping. There's still more than one label present for an instance: {0}".format(temp_labs)
+				labels.append([l for l in temp_labs if l != multilabel[1]][0])
+	else:
+		labels, instances = svm_read_problem(train_file)
 	labels = reMap(labels, mapping)
 
 	# Exclude instances which have 0 as their label
@@ -143,14 +168,17 @@ def train(train_file, fold_num, mapping=None, parameters={'-c': 1}, output_folde
 		paramstring += ' -b 1'
 	paramstring += ' -q'
 
-	model_file = os.path.join(output_folder, os.path.basename(train_file) + '.model')
+	if multilabel:
+		model_file = os.path.join(output_folder, os.path.basename(train_file) + '.{0}.model'.format(multilabel[0]))
+	else:
+		model_file = os.path.join(output_folder, os.path.basename(train_file) + '.model')
 	print '---training'
 	model = svm_train(labels, instances, paramstring)
 	svm_save_model(model_file, model)
 
 	return model_file, distribution
 
-def test(test_file, model_file, fold_num, mapping=None, debug=False):
+def test(test_file, model_file, fold_num, mapping=None, multilabel=None, debug=False):
 	'''
 	Returns predicted labels, prediction values and the as the the test labels
 	(potentially remapped).
@@ -160,7 +188,19 @@ def test(test_file, model_file, fold_num, mapping=None, debug=False):
 	instances against the model.
 
 	'''
-	labels, instances = svm_read_problem(test_file)
+	if multilabel:
+		temp_labels, instances = alt_read_problem(test_file)
+		temp_labels = [[mapping[l] for l in label] for label in temp_labels]
+
+		labels = []
+		for temp_labs in temp_labels:
+			if multilabel[1] in temp_labs:
+				labels.append(multilabel[1])
+			else:
+				assert len(set(temp_labs)) == 1, "Something appears to be wrong with the intermediate mapping. There's still more than one label present for an instance: {0}".format(temp_labs)
+				labels.append([l for l in temp_labs if l != multilabel[1]][0])
+	else:
+		labels, instances = svm_read_problem(test_file)
 	labels = reMap(labels, mapping)
 
 	# Exclude instances which have 0 as their label
@@ -186,13 +226,16 @@ def test(test_file, model_file, fold_num, mapping=None, debug=False):
 
 	return pred_labels, pred_values, label_order, labels
 
-def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1}, pattern=None):
+def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1}, multilabel=None, pattern=None):
 	'''
 	Returns a list of lists of predicted labels (per fold).
 
 	Contains the main pipeline:
 
 	* Remaps the class labels if a mapping is specified.
+
+	* If a specific label is specified in <multilabel>, assume we're
+	dealing with a multilabel dataset and only consider the given label.
 
 	* For each fold, trains and tests each fold based on the instances in
 	<instance_folder>. By default the script looks for files with the following
@@ -201,6 +244,7 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 	Use the <pattern> option to specify your own pattern (can be a regex).
 
 	'''
+	assert not (multilabel and remap_file), '--multilabel and --remap cannot be used at the same time'
 	instance_files = getInstances(instance_folder, pattern=pattern)
 	labels = getLabelMap(instance_folder)
 
@@ -216,11 +260,14 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 
 	The stylene_mapping maps from the original label to its SVM equivalent
 	The intermediate mapping maps from "orginal SVM" to "remapped SVM"
+	The remapping maps from the original label to the remapped labels
 	The true_mapping maps from "remapped" to its SVM equivalent
 
 	'''
 	true_mapping = {}
 	stylene_mapping = getLabelMap(instance_folder)
+	stylene_start_idx = min(stylene_mapping.values())
+	stylene_max_idx = max(stylene_mapping.values())
 	if remap_file:
 		intermediate_mapping = {}
 		remapping = getRemapping(remap_file)
@@ -230,10 +277,29 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 			if label == 'EXCLUDE':
 				true_mapping[label] = 0
 			else:
-				true_mapping[label] = i+1
-
+				if stylene_start_idx == 0:
+					true_mapping[label] = i+1
+				else:
+					true_mapping[label] = i
 		for label, mapped in stylene_mapping.items():
 			intermediate_mapping[mapped] = true_mapping[remapping[label]]
+	elif multilabel:
+		remapping = {}
+		stylene_mapping['other'] = stylene_max_idx + 1
+		assert multilabel in stylene_mapping, "The --multilabel label doesn't seem to be present in the Stylene mapping!"
+		for label in stylene_mapping:
+			if label == multilabel:
+				remapping[label] = label
+			else:
+				remapping[label] = 'other'
+
+		true_mapping[multilabel] = stylene_mapping[multilabel]
+		true_mapping['other'] = stylene_max_idx + 1
+
+		intermediate_mapping = {}
+		for label, mapped in stylene_mapping.items():
+			intermediate_mapping[mapped] = true_mapping[remapping[label]]
+		multilabel = (multilabel, stylene_mapping[multilabel])
 	else:
 		intermediate_mapping = None
 		true_mapping = stylene_mapping
@@ -266,17 +332,21 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 
 		print 'Processing fold {0}/{1}'.format(i+1, len(instance_files))
 		# Train!
-		fold_model, fold_distribution = train(train_file, i, intermediate_mapping, parameters, results_folder)
+		fold_model, fold_distribution = train(train_file, i, intermediate_mapping, parameters, multilabel, results_folder)
 		print 'Training distribution:', dict([(true_mapping[label], dist) for label, dist in fold_distribution.items()])
 
 		# Classify!
-		pred_labels, pred_values, label_order, test_labels = test(test_file, fold_model, i, intermediate_mapping)
+		pred_labels, pred_values, label_order, test_labels = test(test_file, fold_model, i, intermediate_mapping, multilabel)
 
 		# Write the predicted (non-remapped) labels to file.
 		pred_values_dict = dict([(label, []) for label in label_order])
 		output_folder = os.path.join(results_folder, 'fold-{0:02d}'.format(i+1))
 
-		with open(os.path.join(output_folder, os.path.basename(test_file) + '.predicted'), 'w') as fout:
+		if multilabel:
+			predictions_file = os.path.join(output_folder, os.path.basename(test_file) + '.{0}.predicted'.format(multilabel[0]))
+		else:
+			predictions_file = os.path.join(output_folder, os.path.basename(test_file) + '.predicted')
+		with open(predictions_file, 'w') as fout:
 			# Headers
 			fout.write('filename predicted\t')
 			for label in label_order:
@@ -346,6 +416,8 @@ if specified.''', version='%prog 0.1')
 						help="Specify the parameters for the classifier. Separate keys and values with a colon, and different parameters with a dash. (Default: 'c:512-g:8')")
 	parser.add_option('-r', '--remap-file', dest='remap_file', default=None,
 						help="Specify the location of the XML file containing a class remapping. (Default: None)")
+	parser.add_option('-l', '--multilabel', dest='multilabel', default=None,
+						help="For multilabel problems, specify the class label you want to evaluate. (Default: None)")
 	(options, args) = parser.parse_args()
 
 	if len(args) != 1:
@@ -377,4 +449,4 @@ if specified.''', version='%prog 0.1')
 
 	params = dict([('-'+p.split(':')[0], p.split(':')[1]) for p in options.parameters.strip().split('-')])
 
-	main(input_folder, output_folder, remap_file=options.remap_file, parameters=params, pattern=options.pattern)
+	main(input_folder, output_folder, remap_file=options.remap_file, parameters=params, multilabel=options.multilabel, pattern=options.pattern)
