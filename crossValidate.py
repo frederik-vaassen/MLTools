@@ -38,6 +38,13 @@ libsvmpath = '/home/frederik/Tools/libsvm-3.11'
 
 classifier = 'libsvm'
 
+sys.path.insert(0, os.path.join(libsvmpath, 'python'))
+from svmutil import svm_read_problem
+from svmutil import svm_train
+from svmutil import svm_save_model
+from svmutil import svm_load_model
+from svmutil import svm_predict
+
 def getLabelMap(folder):
 	'''
 	Retrieves the label map from the first svm.metadata.txt in <folder>.
@@ -226,7 +233,7 @@ def test(test_file, model_file, fold_num, mapping=None, multilabel=None, debug=F
 
 	return pred_labels, pred_values, label_order, labels
 
-def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1}, multilabel=None, pattern=None):
+def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1}, multilabel=None, pattern=None, silent=False):
 	'''
 	Returns a list of lists of predicted labels (per fold).
 
@@ -317,7 +324,10 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 
 		# If the dictionary file exists, use it to add more meta-information.
 		base_name = test_file.split('.ngrams.txt')[0]
-		dict_file = base_name + '.dictionary.ngrams.txt'
+		if base_name == test_file:
+			dict_file = os.path.splitext(test_file)[0] + '.filelist.txt'
+		else:
+			dict_file = base_name + '.dictionary.ngrams.txt'
 		base_name = os.path.basename(base_name.split('.TotalSet')[0])
 		if not os.path.exists(dict_file):
 			original_filenames = None
@@ -328,12 +338,13 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 					line = fin.readline()
 					if not line.strip():
 						break
-					original_filenames.append(line.split()[1])
+					original_filenames.append(line.strip().split()[1])
 
 		print 'Processing fold {0}/{1}'.format(i+1, len(instance_files))
 		# Train!
 		fold_model, fold_distribution = train(train_file, i, intermediate_mapping, parameters, multilabel, results_folder)
-		print 'Training distribution:', dict([(true_mapping[label], dist) for label, dist in fold_distribution.items()])
+		if not silent:
+			print 'Training distribution:', dict([(true_mapping[label], dist) for label, dist in fold_distribution.items()])
 
 		# Classify!
 		pred_labels, pred_values, label_order, test_labels = test(test_file, fold_model, i, intermediate_mapping, multilabel)
@@ -379,24 +390,31 @@ def main(instance_folder, results_folder, remap_file=None, parameters={'-c': 1},
 		for label, values in pred_values.items():
 			predicted_values[label].extend(values)
 
-		print local_cm
-		print 'Fold Accuracy: {0:.3f}'.format(local_cm.accuracy)
+		if not silent:
+			print local_cm
+			print 'Fold Accuracy: {0:.3f}'.format(local_cm.accuracy)
 		fold_accuracies.append(local_cm.accuracy)
 
 	avg_acc = sum(fold_accuracies)/len(fold_accuracies)
 	stdev = (sum([(acc - avg_acc)**2 for acc in fold_accuracies])/len(fold_accuracies))**0.5
-	print
-	print 'Global confusion matrix:'
-	print global_cm
-	print
-	for label in global_cm.classes:
-		print '{0} P\t{1:.3f}'.format(label, global_cm.precision(label))
-		print '{0} R\t{1:.3f}'.format(label, global_cm.recall(label))
-		print '{0} F\t{1:.3f}'.format(label, global_cm.fmeasure(label))
-	print
-	print 'Accuracy: {0:.3f} +/- {1:.3f} ({2}/{3})'.format(global_cm.accuracy, stdev, sum([global_cm.TP(c) for c in global_cm.classes]), len(global_cm))
-	print 'Micro-avg F:', global_cm.microfmeasure()
-	print 'Macro-avg F:', global_cm.macrofmeasure()
+	correct = sum([global_cm.TP(c) for c in global_cm.classes])
+	total = len(global_cm)
+
+	if not silent:
+		print
+		print 'Global confusion matrix:'
+		print global_cm
+		print
+		for label in global_cm.classes:
+			print '{0} P\t{1:.3f}'.format(label, global_cm.precision(label))
+			print '{0} R\t{1:.3f}'.format(label, global_cm.recall(label))
+			print '{0} F\t{1:.3f}'.format(label, global_cm.fmeasure(label))
+		print
+		print 'Accuracy: {0:.3f} +/- {1:.3f} ({2}/{3})'.format(global_cm.accuracy, stdev, correct, total)
+		print 'Micro-avg F:', global_cm.microfmeasure()
+		print 'Macro-avg F:', global_cm.macrofmeasure()
+
+	return global_cm
 
 if __name__ == '__main__':
 
