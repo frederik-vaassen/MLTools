@@ -208,26 +208,39 @@ class LocalWorker(Worker):
 	def run_one(self,c,g):
 		# Read the problem.
 		labels, features = svm_read_problem(dataset_pathname)
-
-		# Split the problem into [fold] folds
-		folds = split_problem(labels, features, fold)
+		if devset_pathname:
+			dev_labels, dev_features = svm_read_problem(devset_pathname)
+		else:
+			# Split the problem into [fold] folds
+			folds = split_problem(labels, features, fold)
 
 		# Classify each fold
-		paramstring = '-c {c} -g {g} -q {pts}'.format \
-		  (c=c,g=g,pts=pass_through_string)
+		paramstring = '-c {c} -g {g} -q'.format \
+		  (c=c,g=g)
 		cm = ConfusionMatrix()
-		for fold_num in range(fold):
-			train_labels = folds[fold_num]['train']['labels']
-			train_features = folds[fold_num]['train']['features']
-			test_labels = folds[fold_num]['test']['labels']
-			test_features = folds[fold_num]['test']['features']
+		if fold:
+			for fold_num in range(fold):
+				train_labels = folds[fold_num]['train']['labels']
+				train_features = folds[fold_num]['train']['features']
+				test_labels = folds[fold_num]['test']['labels']
+				test_features = folds[fold_num]['test']['features']
+				# Train
+				model = svm_train(train_labels, train_features, paramstring)
+				# Test
+				pred_labels, (ACC, MSC, SCC), pred_values = svm_predict(test_labels, test_features, model)
+				assert len(test_labels) == len(pred_labels)
+				for ref, pred in zip(test_labels, pred_labels):
+					cm.update(ref, pred)
+		else:
 			# Train
-			model = svm_train(train_labels, train_features, paramstring)
+			model = svm_train(labels, features, paramstring)
 			# Test
-			pred_labels, (ACC, MSC, SCC), pred_values = svm_predict(test_labels, test_features, model)
-			assert len(test_labels) == len(pred_labels)
-			for ref, pred in zip(test_labels, pred_labels):
+			pred_labels, (ACC, MSC, SCC), pred_values = svm_predict(dev_labels, dev_features, model)
+			assert len(dev_labels) == len(pred_labels)
+			for ref, pred in zip(dev_labels, pred_labels):
 				cm.update(ref, pred)
+			# Setting labels for minority class calculations
+			labels = dev_labels
 
 		if criterion == 'minorityboost':
 			label_counts = dict([(label, cm.count(label)) for label in set(labels)])
@@ -293,7 +306,7 @@ def main():
 					best_c = 2.0**c1
 					best_g = 2.0**g1
 				print("[{0}] {1} {2} {3} (best c={4}, g={5}, rate={6})".format \
-			(worker,c1,g1,rate, best_c, best_g, best_rate))
+			(worker,2.0**c1,2.0**g1,rate, best_c, best_g, best_rate))
 			db.append((c,g,done_jobs[(c,g)]))
 		redraw(db,[best_c1, best_g1, best_rate])
 		redraw(db,[best_c1, best_g1, best_rate],True)
@@ -303,7 +316,10 @@ def main():
 
 if __name__ == '__main__':
 
-	parser = OptionParser(usage = "python %prog data_file (options)\nOptimizes libSVM's c an g parameters on data_file.", version='%prog 0.1')
+	parser = OptionParser(usage = '''python %prog data_file [dev_file] (options)
+Optimizes libSVM's c an g parameters on data_file.
+If dev_file is present, instead of cross-validating, the script will
+train on data_file and test on dev_file.''', version='%prog 0.1')
 	parser.add_option('-c', '--log2c', dest='log2c', default=None,
 						help='log2 of start, end and step-values (comma-separated) to use to search the c parameter. (Default: -5,15,2)')
 	parser.add_option('-g', '--log2g', dest='log2g', default=None,
@@ -320,15 +336,17 @@ if __name__ == '__main__':
 						help="Specify the path to the libSVM folder. (Default: /opt/libsvm)")
 	parser.add_option('--gnuplot-path', dest='gnuplot_exe', default='/usr/bin/gnuplot',
 						help="Specify the location of Gnuplot. (Default: /usr/bin/gnuplot)")
-	parser.add_option('--passthrough', dest='passthrough', default='',
-						help="Passthrough string for the classifier. (Default: "")")
 	(options, args) = parser.parse_args()
 
-	if len(args) < 1:
+	if len(args) not in [1,2]:
 		sys.exit(parser.print_help())
 
 	# Input file
 	dataset_pathname = args[0]
+	if len(args) == 2:
+		devset_pathname = args[1]
+	else:
+		devset_pathname = None
 
 	is_win32 = (sys.platform == 'win32')
 	if not is_win32:
@@ -341,13 +359,18 @@ if __name__ == '__main__':
 
 	assert os.path.exists(svmtrain_exe),"svm-train executable not found"
 	assert os.path.exists(gnuplot_exe),"gnuplot executable not found"
-	assert os.path.exists(dataset_pathname),"dataset not found"
+	assert os.path.exists(dataset_pathname),"dataset not found:\n{0}".format(dataset_pathname)
+	if devset_pathname:
+		assert os.path.exists(devset_pathname),"devset not found:\n{0}".format(devset_pathname)
 
 	sys.path.insert(0, os.path.join(options.libsvmpath, 'python'))
 	from svmutil import *
 
 	# Output files
-	dataset_title = os.path.basename(dataset_pathname)
+	if devset_pathname:
+		dataset_title = os.path.basename(devset_pathname)
+	else:
+		dataset_title = os.path.basename(dataset_pathname)
 	if not options.out_filename:
 		out_filename = '{0}.out'.format(dataset_title)
 	else:
@@ -357,9 +380,11 @@ if __name__ == '__main__':
 	else:
 		png_filename = options.png_filename
 
-	pass_through_string = options.passthrough
-
-	fold = options.folds
+	if devset_pathname:
+		print 'Dev set found, ignoring "folds" parameter.'
+		fold = None
+	else:
+		fold = options.folds
 	criterion = options.criterion
 
 	if not options.log2c:
