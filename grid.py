@@ -43,6 +43,40 @@ if(sys.hexversion < 0x03000000):
 else:
 	import queue as Queue
 
+def svm_read_problem(data_file_name):
+	"""
+	svm_read_problem(data_file_name) -> [y, x]
+
+	Read LIBSVM-format data from data_file_name and return labels y
+	and data instances x.
+	"""
+	# From libSVM (http://www.csie.ntu.edu.tw/~cjlin/libsvm/), amended
+	# to allow for comments at the end of instances (preceded by #) and
+	# to allow for multi-label instances (labels separated by ',').
+	prob_y = []
+	prob_x = []
+	comments = []
+	for line in open(data_file_name):
+		line = line.split(None, 1)
+		# In case an instance with all zero features
+		if len(line) == 1: line += ['']
+		labels, features = line
+		tmp = features.split('#')
+		if len(tmp) == 2:
+			features = tmp[0].strip()
+			comment = tmp[1].strip()
+		else:
+			comment = None
+		xi = {}
+		for e in features.split():
+			ind, val = e.split(":")
+			xi[int(ind)] = float(val)
+		prob_y += [(map(float, labels.split(',')))]
+		prob_x += [xi]
+		comments += [comment]
+
+	return (prob_y, prob_x), comments
+
 def range_f(begin,end,step):
 	# like range, but works on non-integer too
 	seq = []
@@ -207,9 +241,9 @@ class Worker(Thread):
 class LocalWorker(Worker):
 	def run_one(self,c,g):
 		# Read the problem.
-		labels, features = svm_read_problem(dataset_pathname)
+		(labels, features), comments = svm_read_problem(dataset_pathname)
 		if devset_pathname:
-			dev_labels, dev_features = svm_read_problem(devset_pathname)
+			(dev_labels, dev_features), dev_comments = svm_read_problem(devset_pathname)
 		else:
 			# Split the problem into [fold] folds
 			folds = split_problem(labels, features, fold)
