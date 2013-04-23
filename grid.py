@@ -32,16 +32,27 @@ import os, sys, traceback
 import getpass
 from operator import itemgetter
 from random import shuffle
+from random import sample
 from itertools import chain
 from threading import Thread
 from subprocess import *
 from optparse import OptionParser
-from confusionmatrix import ConfusionMatrix
+from confusionmatrix import *
+
+if not __name__ == '__main__':
+
+	quiet = True
+	gnuplot_exe = '/usr/bin/gnuplot'
+	libsvmpath = '/home/frederik/Tools/libsvm-3.16'
+	sys.path.insert(0, os.path.join(libsvmpath, 'python'))
+	from svmutil import *
 
 if(sys.hexversion < 0x03000000):
 	import Queue
 else:
 	import queue as Queue
+is_win32 = (sys.platform == 'win32')
+
 
 def svm_read_problem(data_file_name):
 	"""
@@ -137,9 +148,6 @@ def redraw(db,best_param,tofile=False):
 	gnuplot.write(b"set key at screen 0.9,0.9\n")
 	gnuplot.write(b"splot \"-\" with lines\n")
 
-
-
-
 	db.sort(key = lambda x:(x[0], -x[1]))
 
 	prevc = db[0][0]
@@ -180,6 +188,28 @@ def calculate_jobs():
 
 def seed():
 	return 0.7787265877145304
+
+def stratifiedSample(instances, ratio=0.1):
+
+	(labels, features), comments = instances
+
+	print len(labels)
+	assert len(labels) >= 1, 'No instances!'
+	sample_size = int(ratio*len(labels)+0.5)
+	assert sample_size >= 100, 'Only {0} instances in sample!'.format(sample_size)
+
+	print '------- Resampling using a ratio of {0} (using {1} instances)'.format(ratio, sample_size)
+
+	label_set = set(labels)
+	instances = zip(labels, features, comments)
+	resampled_instances = []
+	for label in label_set:
+		label_instances = [(l, feats, comment) for (l, feats, comment) in instances if l==label]
+		resampled_instances.extend(sample(label_instances, int(ratio*len(label_instances)+0.5)))
+
+	labels, features, comments = zip(*resampled_instances)
+
+	return (list(labels), list(features)), list(comments)
 
 def split_problem(labels, features, num_folds):
 	'''
@@ -240,13 +270,21 @@ class Worker(Thread):
 
 class LocalWorker(Worker):
 	def run_one(self,c,g):
-		# Read the problem.
-		(labels, features), comments = svm_read_problem(dataset_pathname)
-		if devset_pathname:
-			(dev_labels, dev_features), dev_comments = svm_read_problem(devset_pathname)
+		if __name__ == '__main__':
+			# Read the problem.
+			(labels, features), comments = svm_read_problem(dataset_pathname)
+			if devset_pathname:
+				(dev_labels, dev_features), dev_comments = svm_read_problem(devset_pathname)
+			else:
+				# Split the problem into [fold] folds
+				folds = split_problem(labels, features, fold)
 		else:
-			# Split the problem into [fold] folds
-			folds = split_problem(labels, features, fold)
+			(labels, features), comments = train_instances
+			if dev_instances:
+				(dev_labels, dev_features), dev_comments = dev_instances
+			else:
+				# Split the problem into [fold] folds
+				folds = split_problem(labels, features, fold)
 
 		# Classify each fold
 		paramstring = '-c {c} -g {g} -q'.format \
@@ -261,10 +299,10 @@ class LocalWorker(Worker):
 				# Train
 				model = svm_train(train_labels, train_features, paramstring)
 				# Test
-				pred_labels, (ACC, MSC, SCC), pred_values = svm_predict(test_labels, test_features, model)
+				pred_labels, (ACC, MSC, SCC), pred_values = svm_predict(test_labels, test_features, model, '-q')
 				assert len(test_labels) == len(pred_labels)
 				for ref, pred in zip(test_labels, pred_labels):
-					cm.update(ref, pred)
+					cm.single_add(ref, pred)
 		else:
 			# Train
 			model = svm_train(labels, features, paramstring)
@@ -272,7 +310,7 @@ class LocalWorker(Worker):
 			pred_labels, (ACC, MSC, SCC), pred_values = svm_predict(dev_labels, dev_features, model)
 			assert len(dev_labels) == len(pred_labels)
 			for ref, pred in zip(dev_labels, pred_labels):
-				cm.update(ref, pred)
+				cm.single_add(ref, pred)
 			# Setting labels for minority class calculations
 			labels = dev_labels
 
@@ -282,15 +320,15 @@ class LocalWorker(Worker):
 			minority_class = sorted_classes[0][0]
 			majority_class = sorted_classes[-1][0]
 
-			rate = cm.fmeasure(minority_class)*100
-			if cm.fmeasure(majority_class) == 0.0:
+			rate = cm.fscoree(minority_class)*100
+			if cm.fscore(majority_class) == 0.0:
 				rate = 0.0
 		elif criterion == 'macrofmeasure':
-			rate = cm.macrofmeasure()*100
+			rate = cm.averaged(level=MACRO, score=FSCORE)*100
 		elif criterion == 'microfmeasure':
-			rate = cm.microfmeasure()*100
+			rate = cm.averaged(level=MICRO, score=FSCORE)*100
 		elif criterion == 'accuracy':
-			rate = cm.accuracy*100
+			rate = cm.accuracy()*100
 		else:
 			sys.exit('Unknown criterion: {0}\n Available: macrofmeasure, microfmeasure, accuracy, minorityboost'.format(criterion))
 
@@ -339,14 +377,49 @@ def main():
 					best_c1,best_g1=c1,g1
 					best_c = 2.0**c1
 					best_g = 2.0**g1
-				print("[{0}] {1} {2} {3} (best c={4}, g={5}, rate={6})".format \
+				if not quiet:
+					print("[{0}] {1} {2} {3} (best c={4}, g={5}, rate={6})".format \
 			(worker,2.0**c1,2.0**g1,rate, best_c, best_g, best_rate))
 			db.append((c,g,done_jobs[(c,g)]))
 		redraw(db,[best_c1, best_g1, best_rate])
 		redraw(db,[best_c1, best_g1, best_rate],True)
 
 	job_queue.put((WorkerStopToken,None))
-	print("{0} {1} {2}".format(best_c, best_g, best_rate))
+	if not quiet:
+		print("Best results: -c {0} -g {1} ({2})".format(best_c, best_g, best_rate))
+	return best_c, best_g, best_rate
+
+def gridSearch(train_inst, dev_inst=None, log2c=(-5, 15, 2), log2g=(3, -15, -2), folds=5, resample_ratio=None, crit='macrofmeasure', out_file='grid.out', img_file='grid.png'):
+
+	# Initialize global variables, because grid.py is badly made.
+	global dataset_title
+	dataset_title = 'External dataset'
+	global train_instances
+	global dev_instances
+	global c_begin, c_end, c_step
+	global g_begin, g_end, g_step
+	global fold
+	global criterion
+	global out_filename
+	global png_filename
+	train_instances = train_inst
+	dev_instances = dev_inst
+	c_begin, c_end, c_step = log2c
+	g_begin, g_end, g_step = log2g
+	fold = folds
+	criterion = crit
+	out_filename = out_file
+	png_filename = img_file
+
+	if resample_ratio:
+		train_instances = stratifiedSample(train_instances, resample_ratio)
+
+	global gnuplot
+	gnuplot = Popen(gnuplot_exe,stdin = PIPE).stdin
+	best_c, best_g, best_rate = main()
+
+	#~ return ' -c {0} -g {0}'.format(best_c, best_g)
+	return best_c, best_g, best_rate
 
 if __name__ == '__main__':
 
@@ -366,6 +439,8 @@ train on data_file and test on dev_file.''', version='%prog 0.1')
 						help="Choose the location of the output file. (Default: data_file.out)")
 	parser.add_option('-p', '--png-file', dest='png_filename', default=None,
 						help="Choose the location of the PNG file that will contain the plot. (Default: data_file.png)")
+	parser.add_option('-q', '--quiet', dest='quiet', default=False, action="store_true",
+						help="Don't print output for each iteration.")
 	parser.add_option('--libsvm-path', dest='libsvmpath', default='/opt/libsvm',
 						help="Specify the path to the libSVM folder. (Default: /opt/libsvm)")
 	parser.add_option('--gnuplot-path', dest='gnuplot_exe', default='/usr/bin/gnuplot',
@@ -429,6 +504,8 @@ train on data_file and test on dev_file.''', version='%prog 0.1')
 		g_begin, g_end, g_step =  3, -15, -2
 	else:
 		g_begin, g_end, g_step = map(float, options.log2g.split(','))
+
+	quiet = options.quiet
 
 	gnuplot = Popen(gnuplot_exe,stdin = PIPE).stdin
 	main()
